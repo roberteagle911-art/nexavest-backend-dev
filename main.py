@@ -1,71 +1,88 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import requests
-import random
+from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
+app = FastAPI(title="NexaVest Backend - Real Data Version")
 
-# ✅ Allow frontend access
+# ✅ Allow frontend (your Vercel app) to access backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # for now allow all, can restrict later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Your real Finnhub API key
+# 🧩 Replace with your real API key
 FINNHUB_API_KEY = "d47qudpr01qk80bi464gd47qudpr01qk80bi4650"
+FINNHUB_URL = "https://finnhub.io/api/v1/quote"
+
+# ✅ Data model for request body
+class AnalyzeRequest(BaseModel):
+    symbol: str
+    amount: float
 
 @app.get("/")
-def root():
-    return {"status": "ok", "message": "Welcome to NexaVest Backend"}
+def home():
+    return {"status": "ok", "message": "Welcome to NexaVest Backend (Live Data Model)"}
 
 @app.post("/analyze")
-def analyze_stock(request: dict):
-    symbol = request.get("symbol", "AAPL")
-    amount = request.get("amount", 1000)
+def analyze_stock(request: AnalyzeRequest):
+    symbol = request.symbol.upper()
+    amount = request.amount
 
-    # ✅ Fetch real-time stock data from Finnhub
-    url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
-    res = requests.get(url)
-    data = res.json()
+    # 🔍 Fetch real stock data
+    response = requests.get(f"{FINNHUB_URL}?symbol={symbol}&token={FINNHUB_API_KEY}")
 
-    if "c" not in data:
-        return {"error": "Invalid stock symbol or API limit reached"}
+    if response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Error fetching data from Finnhub API")
+
+    data = response.json()
+    if not data or "c" not in data or data["c"] == 0:
+        raise HTTPException(status_code=404, detail="Invalid stock symbol or missing data")
 
     current_price = data["c"]
+    open_price = data["o"]
     high = data["h"]
     low = data["l"]
+    prev_close = data["pc"]
 
-    # ⚙️ Basic Analysis Logic
-    volatility = round((high - low) / current_price, 3) if current_price else 0
-    expected_return = round(random.uniform(0.05, 0.25), 3)
-    risk_category = "High" if volatility > 0.4 else "Medium" if volatility > 0.2 else "Low"
+    # 📊 Real calculations
+    volatility = round((high - low) / current_price, 3)
+    expected_return = round((current_price - prev_close) / prev_close, 3)
 
-    return {
+    # 🎯 Risk categorization
+    if volatility < 0.02:
+        risk = "Low"
+    elif volatility < 0.05:
+        risk = "Medium"
+    else:
+        risk = "High"
+
+    result = {
         "symbol": symbol,
-        "price": current_price,
         "volatility": volatility,
         "expected_return": expected_return,
-        "risk_category": risk_category,
+        "risk_category": risk
     }
+    return result
 
 @app.post("/ai_recommend")
-def ai_recommend(request: dict):
-    symbol = request.get("symbol", "AAPL")
-    volatility = random.uniform(0.1, 0.5)
-    expected_return = random.uniform(0.05, 0.3)
-    risk_category = "High" if volatility > 0.4 else "Medium" if volatility > 0.2 else "Low"
-    recommendation = (
-        f"{symbol} shows {risk_category.lower()} volatility and "
-        f"{expected_return*100:.1f}% expected return. "
-        f"Suitable for {risk_category.lower()}-risk investors."
-    )
-    return {
-        "symbol": symbol,
-        "volatility": round(volatility, 3),
-        "expected_return": round(expected_return, 3),
-        "risk_category": risk_category,
-        "ai_recommendation": recommendation,
-    }
+def ai_recommend(request: AnalyzeRequest):
+    # Call /analyze internally
+    analysis = analyze_stock(request)
+
+    symbol = analysis["symbol"]
+    risk = analysis["risk_category"]
+    expected_return = analysis["expected_return"] * 100
+
+    if risk == "Low":
+        rec = f"{symbol} shows low volatility and {expected_return:.1f}% expected return. Ideal for conservative investors."
+    elif risk == "Medium":
+        rec = f"{symbol} shows moderate volatility and {expected_return:.1f}% expected return. Suitable for balanced portfolios."
+    else:
+        rec = f"{symbol} shows high volatility and {expected_return:.1f}% expected return. Suitable only for high-risk investors."
+
+    analysis["ai_recommendation"] = rec
+    return analysis
