@@ -1,5 +1,5 @@
 fastapi
-requests
 uvicorn
-pandas
+requests
 yfinance
+pydantic
