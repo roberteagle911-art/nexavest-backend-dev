@@ -8,13 +8,16 @@ app = FastAPI(title="NexaVest Backend (Vercel)")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://nexavest-frontend.vercel.app",  # your frontend domain
+        "http://localhost:5173"  # optional for local testing
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-FINNHUB_API_KEY = "YOUR_API_KEY"
+FINNHUB_API_KEY = "d47qudpr01qk80bi464gd47qudpr01qk80bi4650"
 FINNHUB_URL = "https://finnhub.io/api/v1/quote"
 
 class AnalyzeRequest(BaseModel):
@@ -64,10 +67,10 @@ def analyze_stock(request: AnalyzeRequest):
         risk = "High"
 
     return {
-        "symbol": symbol,
-        "current_price": round(current, 2),
-        "expected_return": expected_return,
-        "volatility": volatility,
-        "risk_category": risk,
-        "ai_recommendation": f"{symbol} shows {risk.lower()} risk and {expected_return*100:.2f}% expected return."
+    "symbol": symbol,
+    "current_price": round(current, 2),
+    "expected_return": expected_return,
+    "volatility": volatility,
+    "risk_category": risk,
+    "ai_recommendation": f"{symbol} shows {risk.lower()} risk and {expected_return*100:.2f}% expected return."
     }
