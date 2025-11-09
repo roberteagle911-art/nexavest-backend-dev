@@ -1,9 +1,49 @@
-            import random
+import os
+import random
+import requests
+import yfinance as yf
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-@app.post("/api/analyze")
-def analyze_stock(request: AnalyzeRequest):
-    symbol = request.symbol.upper()
-    amount = request.amount
+app = FastAPI(title="NexaVest Dev Backend")
+
+# ✅ Allow frontend and localhost
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://nexavest-frontend-dev.vercel.app",
+        "http://localhost:5173"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
+FINNHUB_URL = "https://finnhub.io/api/v1/quote"
+
+
+class AnalyzeRequest(BaseModel):
+    symbol: str
+    amount: float
+
+
+@app.get("/")
+def home():
+    return {"status": "ok", "message": "NexaVest Dev backend running 🚀"}
+
+
+@app.api_route("/api/analyze", methods=["GET", "POST"])
+def analyze_stock(request: AnalyzeRequest = None, symbol: str = None, amount: float = None):
+    if request:
+        symbol = request.symbol.upper()
+        amount = request.amount
+    elif symbol:
+        symbol = symbol.upper()
+        amount = float(amount or 1000)
+    else:
+        raise HTTPException(status_code=400, detail="Missing symbol or amount")
 
     if not FINNHUB_API_KEY:
         raise HTTPException(status_code=500, detail="Missing FINNHUB_API_KEY")
@@ -32,7 +72,7 @@ def analyze_stock(request: AnalyzeRequest):
     expected_return = round((current - prev) / prev, 3)
     risk = "Low" if volatility < 0.02 else "Medium" if volatility < 0.05 else "High"
 
-    # 💬 Generate AI-style insight using logic
+    # 💬 Generate AI-style insight using logic (no API required)
     insights = {
         "Low": [
             f"{symbol} appears stable with minor price swings. Ideal for long-term, low-risk investors.",
@@ -57,4 +97,4 @@ def analyze_stock(request: AnalyzeRequest):
         "volatility": volatility,
         "risk_category": risk,
         "ai_recommendation": ai_message
-    }
+}
