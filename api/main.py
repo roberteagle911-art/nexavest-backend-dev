@@ -27,7 +27,10 @@ def home():
 
 @app.post("/analyze")
 def analyze_stock(request: AnalyzeRequest):
-    symbol = request.symbol.upper().strip()
+    symbol = request.symbol.upper()
+    amount = request.amount
+    # your analysis logic
+    return {"symbol": symbol, "volatility": 0.03, "expected_return": 0.1, "risk_category": "Medium"}
     if "." not in symbol:
         symbol += ".NS"
 
