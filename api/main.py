@@ -6,7 +6,6 @@ import yfinance as yf
 
 app = FastAPI(title="NexaVest Backend (Dev)")
 
-# CORS setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -18,7 +17,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Finnhub API key
 FINNHUB_API_KEY = "d47qudpr01qk80bi464gd47qudpr01qk80bi4650"
 FINNHUB_URL = "https://finnhub.io/api/v1/quote"
 
@@ -28,7 +26,7 @@ class AnalyzeRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"status": "ok", "message": "NexaVest Backend Dev is running successfully ✅"}
+    return {"status": "ok", "message": "NexaVest Backend (Enhanced) ✅"}
 
 @app.post("/analyze")
 def analyze_stock(request: AnalyzeRequest):
@@ -36,7 +34,6 @@ def analyze_stock(request: AnalyzeRequest):
     amount = request.amount
 
     try:
-        # Try Finnhub first
         res = requests.get(f"{FINNHUB_URL}?symbol={symbol}&token={FINNHUB_API_KEY}")
         data = res.json()
 
@@ -46,7 +43,6 @@ def analyze_stock(request: AnalyzeRequest):
             low = data["l"]
             prev = data["pc"]
         else:
-            # Fallback to yfinance if Finnhub has no data
             stock = yf.Ticker(symbol)
             hist = stock.history(period="5d")
             current = hist["Close"].iloc[-1]
@@ -54,11 +50,10 @@ def analyze_stock(request: AnalyzeRequest):
             low = hist["Low"].iloc[-1]
             prev = hist["Close"].iloc[-2]
 
-        # Calculate volatility & expected return
         volatility = round((high - low) / current, 3)
         expected_return = round((current - prev) / prev, 3)
 
-        # Risk classification
+        # Risk Category
         if volatility < 0.02:
             risk = "Low"
         elif volatility < 0.05:
@@ -66,10 +61,16 @@ def analyze_stock(request: AnalyzeRequest):
         else:
             risk = "High"
 
-        # AI-like recommendation text
+        # Estimated return in money
+        estimated_value = round(amount * (1 + expected_return), 2)
+        gain_or_loss = round(estimated_value - amount, 2)
+        status = "gain" if gain_or_loss >= 0 else "loss"
+
         ai_recommendation = (
-            f"{symbol} has {risk.lower()} risk and volatility of {volatility}. "
-            f"It’s a suitable choice for {('conservative' if risk == 'Low' else 'balanced' if risk == 'Medium' else 'aggressive')} investors."
+            f"{symbol} is showing {risk.lower()} risk and {volatility} volatility. "
+            f"If you invest ${amount}, your estimated value could be around ${estimated_value} "
+            f"({status} of ${abs(gain_or_loss)}). "
+            f"This is ideal for {('conservative' if risk == 'Low' else 'balanced' if risk == 'Medium' else 'aggressive')} investors."
         )
 
         return {
@@ -78,7 +79,9 @@ def analyze_stock(request: AnalyzeRequest):
             "expected_return": expected_return,
             "volatility": volatility,
             "risk_category": risk,
-            "ai_recommendation": ai_recommendation,
+            "estimated_value": estimated_value,
+            "gain_or_loss": gain_or_loss,
+            "ai_recommendation": ai_recommendation
         }
 
     except Exception as e:
