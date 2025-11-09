@@ -72,7 +72,6 @@ def analyze_stock(request: AnalyzeRequest = None, symbol: str = None, amount: fl
     expected_return = round((current - prev) / prev, 3)
     risk = "Low" if volatility < 0.02 else "Medium" if volatility < 0.05 else "High"
 
-    # 💬 Generate AI-style insight using logic (no API required)
     insights = {
         "Low": [
             f"{symbol} appears stable with minor price swings. Ideal for long-term, low-risk investors.",
@@ -97,4 +96,4 @@ def analyze_stock(request: AnalyzeRequest = None, symbol: str = None, amount: fl
         "volatility": volatility,
         "risk_category": risk,
         "ai_recommendation": ai_message
-}
+                                }
