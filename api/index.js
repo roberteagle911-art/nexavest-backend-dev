@@ -1,220 +1,168 @@
-// api/index.js
-// Vercel serverless function for NexaVest live analysis
-// Uses global fetch (Node 18+ on Vercel). No extra native deps required.
+// NexaVest AI Backend — Node.js 22 (Vercel Serverless)
+// Provides live analysis for stocks, crypto, and forex
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
-function sendJson(res, status, obj) {
+// Utility to send JSON response
+function send(res, status, data) {
   res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
-  res.end(JSON.stringify(obj));
+  res.end(JSON.stringify(data));
 }
 
-async function yahooSearch(query) {
-  const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}`;
-  const r = await fetch(url, { timeout: 10000 });
-  if (!r.ok) return null;
-  const j = await r.json();
-  const quotes = j?.quotes || [];
-  if (quotes.length === 0) return null;
-  return quotes[0].symbol;
+// Utility to parse JSON body
+async function getBody(req) {
+  return new Promise((resolve) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        resolve({});
+      }
+    });
+  });
 }
 
-async function yahooQuote(symbol) {
+// Detect type based on user input
+function detectType(input) {
+  const q = input.toLowerCase().trim();
+  if (q.includes("/")) return "forex";
+  if (
+    ["btc", "bitcoin", "eth", "ethereum", "doge", "bnb", "sol", "solana"].some((x) => q.includes(x))
+  )
+    return "crypto";
+  return "stock";
+}
+
+// Fetch stock symbol from company name
+async function findStockSymbol(name) {
+  const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(name)}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  const quotes = data?.quotes || [];
+  return quotes.length ? quotes[0].symbol : null;
+}
+
+// Get stock price
+async function getStockPrice(symbol) {
   const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`;
-  const r = await fetch(url, { timeout: 10000 });
-  if (!r.ok) return null;
-  const j = await r.json();
-  const q = j?.quoteResponse?.result?.[0];
-  return q || null;
+  const res = await fetch(url);
+  const data = await res.json();
+  const q = data?.quoteResponse?.result?.[0];
+  if (!q || !q.regularMarketPrice) return null;
+  return {
+    name: q.longName || symbol,
+    symbol: q.symbol,
+    price: q.regularMarketPrice,
+    currency: q.currency || "USD",
+  };
 }
 
-async function coingeckoSearchPrice(q) {
-  // Try search to get coin id
-  const searchUrl = `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(q)}`;
-  const r = await fetch(searchUrl, { timeout: 10000 });
-  if (!r.ok) return null;
-  const j = await r.json();
-  const coin = (j.coins && j.coins[0]) || null;
+// Get crypto price
+async function getCryptoPrice(symbol) {
+  const search = await fetch(
+    `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(symbol)}`
+  );
+  const sdata = await search.json();
+  const coin = sdata.coins?.[0];
   if (!coin) return null;
   const id = coin.id;
-  const priceUrl = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(id)}&vs_currencies=usd`;
-  const p = await fetch(priceUrl, { timeout: 10000 });
-  if (!p.ok) return null;
-  const pj = await p.json();
-  return { id, name: coin.name, symbol: coin.symbol, price_usd: pj[id]?.usd ?? null };
+  const priceRes = await fetch(
+    `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`
+  );
+  const p = await priceRes.json();
+  return {
+    name: coin.name,
+    symbol: coin.symbol.toUpperCase(),
+    price: p[id]?.usd || null,
+    currency: "USD",
+  };
 }
 
-async function forexRate(pair) {
-  // Accept "USD/INR" or "USDINR"
-  let normalized = pair.replace(/\s+/g, "").toUpperCase();
-  if (!normalized.includes("/")) {
-    if (normalized.length === 6) normalized = normalized.slice(0,3) + "/" + normalized.slice(3);
-    else return null;
+// Get forex rate
+async function getForexRate(pair) {
+  let normalized = pair.toUpperCase().replace(/\s+/g, "");
+  if (!normalized.includes("/") && normalized.length === 6) {
+    normalized = normalized.slice(0, 3) + "/" + normalized.slice(3);
   }
   const [base, quote] = normalized.split("/");
   const url = `https://api.exchangerate.host/latest?base=${base}&symbols=${quote}`;
-  const r = await fetch(url, { timeout: 10000 });
-  if (!r.ok) return null;
-  const j = await r.json();
-  const rate = j?.rates?.[quote];
-  if (!rate) return null;
-  return { pair: `${base}/${quote}`, rate };
+  const res = await fetch(url);
+  const data = await res.json();
+  const rate = data?.rates?.[quote];
+  return rate ? { pair: `${base}/${quote}`, price: rate, currency: quote } : null;
 }
 
-function detectTypeFromInput(q) {
-  const s = q.toLowerCase().trim();
-  if (s.includes("/")) return "forex";
-  const cryptoClues = ["bitcoin","btc","ethereum","eth","bnb","doge","dogecoin","sol","matic","matic","ltc","avax"];
-  if (cryptoClues.some(c => s.includes(c) || s === c)) return "crypto";
-  // if purely alphabetic and short (1-5 chars), might be ticker, but we will search Yahoo anyway
-  return "unknown"; // we'll attempt crypto, forex, then stock search
+// Risk and holding logic
+function riskAndHold(type) {
+  if (type === "crypto") return { risk: "High", expected_return: "8%", hold: "Short-term" };
+  if (type === "forex") return { risk: "Medium", expected_return: "2%", hold: "6-12 months" };
+  return { risk: "Low", expected_return: "5%", hold: "12+ months" };
 }
 
-function riskLabel(vol) {
-  if (vol == null) return "Unknown";
-  if (vol >= 0.06) return "High";
-  if (vol >= 0.02) return "Medium";
-  return "Low";
-}
-
-function holdingSuggestion(type, risk) {
-  if (type === "crypto") return "Short (days-weeks) — high volatility";
-  if (type === "forex") return "Short to medium (days-months)";
-  if (risk === "Low") return "12+ months";
-  if (risk === "Medium") return "6-12 months";
-  return "Short to medium (months)";
-}
-
+// --- Serverless Function Entry ---
 module.exports = async (req, res) => {
-  // CORS preflight
   if (req.method === "OPTIONS") {
     res.writeHead(204, CORS_HEADERS);
     res.end();
     return;
   }
 
-  const url = req.url || "";
-  // route handling
-  if (req.method === "GET" && (url === "/api/ping" || url === "/api/ping/")) {
-    return sendJson(res, 200, { ok: true, time: new Date().toISOString() });
+  if (req.method === "GET" && req.url.startsWith("/api/ping")) {
+    return send(res, 200, { ok: true, time: new Date().toISOString() });
   }
 
-  if (req.method === "POST" && (url === "/api/analyze" || url === "/api/analyze/")) {
+  if (req.method === "POST" && req.url.startsWith("/api/analyze")) {
     try {
-      let body = "";
-      await new Promise((resolve) => {
-        req.on("data", chunk => body += chunk);
-        req.on("end", resolve);
-      });
-      const data = body ? JSON.parse(body) : {};
-      const rawAsset = (data.asset || data.query || "").toString().trim();
-      const amount = Number(data.amount || data.investment || data.value || 0);
+      const body = await getBody(req);
+      const asset = (body.asset || "").trim();
+      const amount = Number(body.amount || 0);
 
-      if (!rawAsset || isNaN(amount) || amount <= 0) {
-        return sendJson(res, 400, { error: "Provide valid asset (name/ticker/crypto/pair) and positive amount" });
+      if (!asset || isNaN(amount) || amount <= 0) {
+        return send(res, 400, { error: "Enter valid asset name and amount" });
       }
 
-      const detected = detectTypeFromInput(rawAsset);
+      const type = detectType(asset);
+      let info = null;
 
-      // 1) forex
-      if (detected === "forex") {
-        const fx = await forexRate(rawAsset);
-        if (!fx) return sendJson(res, 404, { error: "Forex pair not found" });
-        const current_price = fx.rate;
-        const type = "forex";
-        const expected_return = 0.02;
-        const volatility = 0.02;
-        const risk = riskLabel(volatility);
-        const est_value = +(amount * (1 + expected_return)).toFixed(2);
-        return sendJson(res, 200, {
-          asset: fx.pair,
-          type,
-          currency: fx.pair.split("/")[1],
-          current_price,
-          expected_return: `${(expected_return*100).toFixed(2)}%`,
-          volatility,
-          risk,
-          holding_period: holdingSuggestion(type, risk),
-          estimated_value: est_value,
-          summary: `${fx.pair} live rate ${current_price}.`,
-          disclaimer: "Informational only — not financial advice."
-        });
+      if (type === "forex") info = await getForexRate(asset);
+      else if (type === "crypto") info = await getCryptoPrice(asset);
+      else {
+        const symbol = await findStockSymbol(asset);
+        info = symbol ? await getStockPrice(symbol) : null;
       }
 
-      // 2) crypto: try coinGecko search
-      const cg = await coingeckoSearchPrice(rawAsset);
-      if (cg && cg.price_usd != null) {
-        const type = "crypto";
-        const current_price = cg.price_usd;
-        const expected_return = 0.08;
-        const volatility = 0.08;
-        const risk = riskLabel(volatility);
-        const est_value = +(amount * (1 + expected_return)).toFixed(2);
-        return sendJson(res, 200, {
-          asset: cg.name,
-          symbol: cg.symbol.toUpperCase(),
-          type,
-          currency: "USD",
-          current_price,
-          expected_return: `${(expected_return*100).toFixed(2)}%`,
-          volatility,
-          risk,
-          holding_period: holdingSuggestion(type, risk),
-          estimated_value: est_value,
-          summary: `${cg.name} price from CoinGecko: ${current_price} USD.`,
-          disclaimer: "Informational only — not financial advice."
-        });
+      if (!info || !info.price) {
+        return send(res, 404, { error: "Asset not found or no price data" });
       }
 
-      // 3) stock/company name: use Yahoo search then quote
-      const symbol = await yahooSearch(rawAsset);
-      if (!symbol) {
-        return sendJson(res, 404, { error: "Asset not found via search" });
-      }
-      const quote = await yahooQuote(symbol);
-      if (!quote) return sendJson(res, 404, { error: "No quote data for symbol" });
+      const { risk, expected_return, hold } = riskAndHold(type);
+      const est_value = +(amount * (1 + parseFloat(expected_return) / 100)).toFixed(2);
 
-      const current_price = quote.regularMarketPrice ?? quote.regularMarketPreviousClose ?? quote.postMarketPrice ?? null;
-      const currency = quote.currency ?? "USD";
-      const type = (quote.quoteType || "EQUITY").toLowerCase() === "etf" ? "etf" : "stock";
-
-      // Basic volatility estimate: use daily change pct if provided
-      let volatility = null;
-      try {
-        const change = Number(quote.regularMarketChangePercent) / 100;
-        volatility = Math.abs(change) || 0.02;
-      } catch (e) {
-        volatility = 0.02;
-      }
-      const expected_return = 0.05;
-      const risk = riskLabel(volatility);
-      const est_value = +(amount * (1 + expected_return)).toFixed(2);
-
-      return sendJson(res, 200, {
-        asset: quote.longName || symbol,
-        symbol,
+      return send(res, 200, {
+        asset: info.name || asset,
+        symbol: info.symbol || asset,
         type,
-        currency,
-        current_price,
-        expected_return: `${(expected_return*100).toFixed(2)}%`,
-        volatility,
+        current_price: info.price,
+        currency: info.currency,
         risk,
-        holding_period: holdingSuggestion(type, risk),
+        expected_return,
+        holding_period: hold,
         estimated_value: est_value,
-        summary: `${quote.longName || symbol} (${symbol}) price ${current_price} ${currency}.`,
-        disclaimer: "Informational only — not financial advice."
+        summary: `${info.name || asset} (${info.symbol || asset}) is a ${type} asset with ${risk} risk and expected return of ${expected_return}.`,
+        disclaimer: "This analysis is informational only. Not financial advice.",
       });
-
     } catch (err) {
-      console.error("analyze error:", err && err.stack ? err.stack : err);
-      return sendJson(res, 500, { error: "Server error", details: String(err) });
+      console.error("Error:", err);
+      return send(res, 500, { error: "Server error", details: String(err) });
     }
   }
 
-  // default: Not Found
-  sendJson(res, 404, { error: "Not Found" });
+  // Default route
+  return send(res, 404, { error: "Not Found" });
 };
