@@ -1,143 +1,138 @@
 # main.py
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
-import math
+import yfinance as yf
+import requests
+import statistics
+from datetime import datetime, timedelta
 
-app = FastAPI(title="NexaVest Backend (Dev)")
+app = FastAPI(title="NexaVest Live Backend")
 
-# Allow your frontend domains here (or "*" for dev)
-origins = ["*"]
+# Allow all origins (for frontend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
+# Input model
 class AnalyzeRequest(BaseModel):
     asset: str
     amount: float
 
 
 @app.get("/ping")
-async def ping():
-    return {"status": "ok", "message": "NexaVest backend running"}
+def ping():
+    return {"status": "ok", "message": "NexaVest Live Backend running"}
 
 
+# Detect asset type
 def detect_asset_type(asset: str):
-    """Simple heuristic to detect asset type.
-       - forex pairs: contain '/' (e.g. 'USD/INR', 'XAU/USD')
-       - crypto: contains 'coin' or endswith 'usd' or common crypto names
-       - stock: otherwise treat as stock/code
-    """
-    a = asset.strip().lower()
-    # forex detection
-    if "/" in a or len(a.split()) == 1 and any(sep in a for sep in ["/"]):
+    asset = asset.lower().strip()
+    if "/" in asset:
         return "forex"
-    # common crypto clues
-    crypto_clues = ["coin", "btc", "eth", "bnb", "doge", "usdt", "usdc", "sol", "avax", "ada", "matic"]
-    if any(clue in a for clue in crypto_clues) or a.endswith("usd") or a.endswith("btc"):
+    if asset.endswith("usd") or any(k in asset for k in ["btc", "eth", "sol", "bnb", "doge"]):
         return "crypto"
-    # fallback: stock
     return "stock"
 
 
-def mock_price_for(asset_type: str, asset: str):
-    """Return a mock current price for dev/testing (not production).
-       In prod, you should call a real price API (Yahoo/AlphaVantage/CoinGecko).
-    """
-    base = 100.0
-    if asset_type == "crypto":
-        # crypto can be volatile / smaller unit:
-        if "btc" in asset.lower():
-            return 60000.0
-        if "eth" in asset.lower():
-            return 3500.0
-        return 2.5  # small alt coin
-    if asset_type == "forex":
-        # for XAU/USD (gold) give a large value, else typical forex ~1-80
-        if "xau" in asset.lower() or "gold" in asset.lower():
-            return 2000.0
-        return 75.0
-    # stock
-    # if user provided symbol like AAPL or Apple, give some reasonable stock price
-    if "aapl" in asset.lower() or "apple" in asset.lower():
-        return 268.47
-    if "reliance" in asset.lower() or ".ns" in asset.lower():
-        return 1489.30
-    # generic
-    return base
+# Get live stock price from Yahoo Finance
+def get_stock_price(symbol: str):
+    try:
+        data = yf.Ticker(symbol)
+        info = data.history(period="5d")
+        if info.empty:
+            raise ValueError("Invalid stock symbol")
+        current_price = info["Close"].iloc[-1]
+        prices = list(info["Close"])
+        vol = statistics.pstdev(prices) / (sum(prices) / len(prices))
+        return round(current_price, 2), round(vol, 4)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Unable to fetch stock data for {symbol}")
 
 
-def mock_volatility_for(asset_type: str):
-    if asset_type == "crypto":
-        return 0.07
-    if asset_type == "forex":
-        return 0.02
-    return 0.017
+# Get crypto price from CoinGecko API
+def get_crypto_price(symbol: str):
+    try:
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
+        res = requests.get(url, timeout=10).json()
+        if symbol not in res:
+            raise ValueError("Invalid crypto symbol")
+        price = res[symbol]["usd"]
+        return round(price, 2), 0.07  # assume 7% volatility (simplified)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Unable to fetch crypto data for {symbol}")
+
+
+# Get forex price from exchangerate.host
+def get_forex_price(pair: str):
+    try:
+        base, quote = pair.split("/")
+        url = f"https://api.exchangerate.host/latest?base={base.upper()}&symbols={quote.upper()}"
+        res = requests.get(url, timeout=10).json()
+        rate = res["rates"][quote.upper()]
+        return round(rate, 4), 0.02
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Unable to fetch forex data for {pair}")
 
 
 def suggest_risk(vol):
-    if vol is None:
-        return "Unknown"
     if vol >= 0.06:
         return "High"
-    if vol >= 0.02:
+    elif vol >= 0.02:
         return "Medium"
-    return "Low"
+    else:
+        return "Low"
 
 
-def suggest_holding_period(asset_type: str, risk_level: str):
+def holding_period(asset_type, risk):
     if asset_type == "crypto":
-        return "Short (crypto is highly volatile)"
-    if risk_level == "High":
-        return "Short-term (weeks to months)"
-    if risk_level == "Medium":
+        return "Short (Highly volatile)"
+    if risk == "High":
+        return "Weeks to months"
+    if risk == "Medium":
         return "6-12 months"
     return "12+ months"
 
 
 @app.post("/analyze")
-async def analyze(req: AnalyzeRequest):
+def analyze(req: AnalyzeRequest):
     asset = req.asset.strip()
     amount = req.amount
-    if not asset or amount is None or amount <= 0:
-        raise HTTPException(status_code=400, detail="Provide valid 'asset' and positive 'amount'.")
+
+    if not asset or amount <= 0:
+        raise HTTPException(status_code=400, detail="Enter valid asset and amount")
 
     asset_type = detect_asset_type(asset)
-    current_price = mock_price_for(asset_type, asset)
-    volatility = mock_volatility_for(asset_type)
-    expected_return = -0.005 if asset_type == "stock" else (0.0 if asset_type == "crypto" else 0.0)
+    currency = "USD"
 
-    # compute estimated value after expected return (simple model)
-    est_value = round(amount * (1 + expected_return), 2)
-    gain_loss_value = round(est_value - amount, 2)
+    # Determine live price
+    if asset_type == "stock":
+        price, vol = get_stock_price(asset)
+    elif asset_type == "crypto":
+        price, vol = get_crypto_price(asset)
+    elif asset_type == "forex":
+        price, vol = get_forex_price(asset)
+    else:
+        raise HTTPException(status_code=400, detail="Unknown asset type")
 
-    risk = suggest_risk(volatility)
-    holding = suggest_holding_period(asset_type, risk)
+    risk = suggest_risk(vol)
+    holding = holding_period(asset_type, risk)
+    estimated_value = round(amount * price, 2)
 
-    # build a short human-friendly summary (safest possible language)
-    summary = (
-        f"{asset} shows {risk.lower()} risk with volatility {volatility:.3f}. "
-        f"This is an informational analysis only — not financial advice."
-    )
+    summary = f"{asset.upper()} is classified as a {asset_type} with {risk.lower()} risk. Estimated value is {estimated_value} {currency}. This is an informational analysis only."
 
-    response = {
-        "asset": asset,
+    return {
+        "asset": asset.upper(),
         "type": asset_type,
-        "symbol": asset.upper(),
-        "market": "mock",
-        "currency": "INR" if ".ns" in asset.lower() or "reliance" in asset.lower() else ("USD" if asset_type != "forex" else "USD"),
-        "current_price": round(current_price, 2),
-        "volatility": round(volatility, 3),
-        "expected_return": expected_return,
+        "currency": currency,
+        "current_price": price,
+        "volatility": vol,
         "risk": risk,
         "holding_period": holding,
-        "estimated_value": est_value,
-        "gain_loss": gain_loss_value,
+        "estimated_value": estimated_value,
         "summary": summary,
-    }
-    return response
+        "disclaimer": "This tool provides informational analysis only. It is NOT financial advice or a forecast. Always do your own research.",
+                            }
