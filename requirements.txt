@@ -1,6 +1,4 @@
 fastapi==0.109.0
 uvicorn==0.24.0
 requests==2.31.0
-yfinance==0.2.40
 pydantic==1.10.13
-forex-python==1.8
