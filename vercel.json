@@ -1,9 +1,11 @@
 {
-  "version": 2,
-  "builds": [
-    { "src": "main.py", "use": "@vercel/python" }
-  ],
+  "functions": {
+    "main.py": {
+      "runtime": "python3.11"
+    }
+  },
   "routes": [
-    { "src": "/(.*)", "dest": "/main.py" }
+    { "src": "/ping", "dest": "/main.py" },
+    { "src": "/analyze", "dest": "/main.py" }
   ]
 }
